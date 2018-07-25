@@ -1,0 +1,10 @@
+*.pyc
+dataset/
+log/
+checkpoint/
+*.swp
+*.log
+checkpoint/*
+log/*
+test/*
+__pycache__
