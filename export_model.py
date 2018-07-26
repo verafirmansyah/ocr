@@ -70,15 +70,17 @@ def export_by_metagraph(checkpoint_dir, output_node_names, graph_file,
                 variable_names_whitelist=variable_names_whitelist,
                 variable_names_blacklist=variable_names_blacklist)
 
-            output_graph_def = tf.graph_util.remove_training_nodes(output_graph_def)
+            # 增加这句话会报错
+            # output_graph_def = tf.graph_util.remove_training_nodes(output_graph_def)
 
             pb_file = graph_file if graph_file.endswith(".pb") else graph_file + ".pb"
             tf.train.write_graph(output_graph_def, graph_dir, pb_file, as_text=False)
-            print("export graph file {} successfully".format(graph_file))
+            print("export graph file {} successfully".format(pb_file))
 
             if include_text:
                 pb_file_txt = graph_file.replace(".pb", ".pbtxt") if graph_file.endswith(".pb") else graph_file + ".pbtxt"
                 tf.train.write_graph(output_graph_def, graph_dir, pb_file_txt , as_text=True)
+                print("export graph file {} successfully".format(pb_file_txt))
 
             return output_graph_def
     else:
@@ -90,10 +92,10 @@ def export_by_metagraph(checkpoint_dir, output_node_names, graph_file,
 # output_elements : 输出的 operation 名称，格式为 op_name:output_index
 def inference(pb_path, input_map, output_elements):
     with tf.Session() as sess:
-        with open(pb_path, 'rb') as graph:
+        with open(pb_path, 'rb') as f:
             graph_def = tf.GraphDef()
-            graph_def.ParseFromString(graph.read())
-            output = tf.import_graph_def(graph_def, return_elements=output_elements)
+            graph_def.ParseFromString(f.read())
+            output = tf.import_graph_def(graph_def, input_map, output_elements)
             return sess.run(output)
 
 def _args_parse():
