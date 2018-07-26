@@ -94,7 +94,7 @@ def inference(pb_path, input_map, output_elements):
             graph_def = tf.GraphDef()
             graph_def.ParseFromString(graph.read())
             output = tf.import_graph_def(graph_def, return_elements=output_elements)
-            print(sess.run(output))
+            return sess.run(output)
 
 def _args_parse():
     #parser = argparse.ArgumentParser(description=description, formatter_class =
