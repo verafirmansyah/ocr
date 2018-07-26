@@ -19,6 +19,7 @@ import cv2
 from tensorflow.python.ops import control_flow_ops
 import sys
 from segment import ImageUtil
+from export_model import inference as infer
 
 logging.basicConfig(level = logging.INFO, format = '%(asctime)s - %(levelname)s - %(lineno)s : %(message)s')
 log = logging.getLogger(__name__)
@@ -177,14 +178,15 @@ def get_optimizer(optimizer_method, learning_rate, **kwargs):
   return optimizer
 
 
-def build_graph(top_k):
+def build_graph():
     """
     from lenet
     """
+    top_k = tf.placeholder(dtype=tf.int32, shape=[], name="top_k")
     keep_prob = tf.placeholder(dtype=tf.float32, shape=[], name='keep_prob') # dropout打开概率
     images = tf.placeholder(dtype=tf.float32, shape=[None, 64, 64, 1], name='image_batch')
     labels = tf.placeholder(dtype=tf.int64, shape=[None], name='label_batch')
-    is_training = tf.placeholder(dtype=tf.bool, shape=[], name='train_flag')
+    is_training = tf.placeholder(dtype=tf.bool, shape=[], name='is_training')
     with tf.device('/gpu:0'):
         #给slim.conv2d和slim.fully_connected准备了默认参数：batch_norm
         with slim.arg_scope([slim.conv2d, slim.fully_connected],
@@ -217,18 +219,21 @@ def build_graph(top_k):
         global_step = tf.get_variable("step", [], initializer=tf.constant_initializer(0.0), trainable=False)
         optimizer = get_optimizer("momentum", 0.01)
         train_op = slim.learning.create_train_op(loss, optimizer, global_step=global_step)
-        probabilities = tf.nn.softmax(logits)
+        probabilities = tf.nn.softmax(logits, name="probabilities")
 
         # 绘制 loss accuracy 曲线
         tf.summary.scalar('loss', loss)
         tf.summary.scalar('accuracy', accuracy)
         merged_summary_op = tf.summary.merge_all()
-        # 返回 top k 个预测结果及其概率；返回 top K accuracy
-        predicted_val_top_k, predicted_index_top_k = tf.nn.top_k(probabilities, k=top_k)
-        accuracy_in_top_k = tf.reduce_mean(tf.cast(tf.nn.in_top_k(probabilities, labels, top_k), tf.float32))
+        # top K precdiction, accuracy
+        predicted_val_top_k, predicted_index_top_k = tf.nn.top_k(probabilities, k=top_k, name="top_k_predict")
+        predicted_val_top_k = tf.identity(predicted_val_top_k, name="predict_val")
+        predicted_index_top_k = tf.identity(predicted_index_top_k, name="predict_index")
+        accuracy_in_top_k = tf.reduce_mean(tf.cast(tf.nn.in_top_k(probabilities, labels, tf.cast(top_k, tf.int64)), tf.float32))
 
     return {'images': images,
             'labels': labels,
+            'top_k' : top_k,
             'keep_prob': keep_prob,
             'top_k': top_k,
             'global_step': global_step,
@@ -250,12 +255,12 @@ def train():
     test_feeder = DataIterator(data_dir=FLAGS.test_data_dir)
     log.info("total train example {0}".format(len(train_feeder.labels)))
     log.info("total test example {0}".format(len(test_feeder.labels)))
-    model_name = 'chinese-rec-model'
+    model_name = 'digital_ocr'
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options, allow_soft_placement=True)) as sess:
         #  从训练和测试集中的队列中批量读取
         train_images, train_labels, train_files = train_feeder.input_pipeline(FLAGS.batch_size, FLAGS.train_epoch, True)
         test_images, test_labels, test_files = test_feeder.input_pipeline(batch_size=FLAGS.batch_size)
-        graph = build_graph(top_k=1)  # 训练时top k = 1
+        graph = build_graph()
         # 这里会保存所有可以保存的变量
         saver = tf.train.Saver()
         sess.run(tf.global_variables_initializer())
@@ -292,6 +297,7 @@ def train():
                                 str(train_labels_batch[m]) == str(train_files_batch[m]).split(os.sep)[-2])
                 feed_dict = {graph['images']: train_images_batch,
                              graph['labels']: train_labels_batch,
+                             graph['top_k']: 1,
                              graph['keep_prob']: 0.8,
                              graph['is_training']: True}
                 _, loss_val, train_summary, step = sess.run(
@@ -310,6 +316,7 @@ def train():
                     test_images_batch, test_labels_batch, test_files_batch = sess.run([test_images, test_labels, test_files])
                     feed_dict = {graph['images']: test_images_batch,
                                  graph['labels']: test_labels_batch,
+                                 graph['top_k']: 1,
                                  graph['keep_prob']: 1.0,
                                  graph['is_training']: False}
                     accuracy_test, test_summary = sess.run([graph['accuracy'], graph['merged_summary_op']], feed_dict=feed_dict)
@@ -347,7 +354,7 @@ def validation():
 
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options,allow_soft_placement=True)) as sess:
         test_images, test_labels, test_files = test_feeder.input_pipeline(batch_size=FLAGS.batch_size, num_epochs=1)
-        graph = build_graph(top_k=5)
+        graph = build_graph()
         saver = tf.train.Saver()
 
         sess.run(tf.global_variables_initializer())
@@ -380,6 +387,7 @@ def validation():
                                 str(test_labels_batch[m]) == str(test_files_batch[m]).split(os.sep)[-2])
                 feed_dict = {graph['images']: test_images_batch,
                              graph['labels']: test_labels_batch,
+                             graph['top_k']: 5,
                              graph['keep_prob']: 1.0,
                              graph['is_training']: False}
                 batch_labels, probs, indices, acc_1, acc_k = sess.run([graph['labels'],
@@ -455,7 +463,7 @@ def inference(name_list):
     # image preprocess
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options,allow_soft_placement=True)) as sess:
         log.info('========start inference============')
-        graph = build_graph(top_k=3)
+        graph = build_graph()
         saver = tf.train.Saver()
         # restore model from checkpoint_dir
         ckpt = tf.train.latest_checkpoint(FLAGS.checkpoint_dir)
@@ -486,6 +494,7 @@ def inference(name_list):
                 images = sess.run(tf.convert_to_tensor(image_batch))
                 predict_val, predict_index = sess.run([graph['predicted_val_top_k'], graph['predicted_index_top_k']],
                                                   feed_dict={graph['images']: images,
+                                                             graph['top_k']: 3,
                                                              graph['keep_prob']: 1.0,
                                                              graph['is_training']: False})
                 for p in predict_val:
@@ -494,6 +503,54 @@ def inference(name_list):
                     idx_list.append(p)
                 image_batch = []
     return val_list,idx_list
+
+
+def predict(name_list):
+    val_list=[]
+    idx_list=[]
+    image_batch = []
+    ele_num = len(name_list)
+    index = 0
+    for image in name_list:
+        #print(image)
+        left = ele_num - index
+        percentage = int(float(index) / ele_num * 100)
+        if percentage % 10 == 0:
+            log.info("complete {0} percentage".format(percentage))
+        index += 1
+        images_content = tf.read_file(image)
+        images = tf.image.convert_image_dtype(tf.image.decode_png(images_content, channels=1), tf.float32)
+        images = tf.image.per_image_standardization(images)
+        new_size = tf.constant([FLAGS.image_size, FLAGS.image_size], dtype=tf.int32)
+        images = tf.image.resize_images(images, new_size)
+        image_batch.append(images)
+        if len(image_batch) == FLAGS.batch_size or \
+               (left < FLAGS.batch_size and index == ele_num):
+            #img = sess.run(tf.expand_dims(images, 0))
+            output = _predict(image_batch)
+            predict_val = output[0]
+            predict_index = output[1]
+            for p in predict_val:
+                val_list.append(p)
+            for p in predict_index:
+                idx_list.append(p)
+            image_batch = []
+    return val_list,idx_list
+
+
+def _predict(image_batch):
+    with tf.Session() as sess:
+        images = tf.convert_to_tensor(image_batch)
+        input_map = {
+            "keep_prob" : tf.constant(1.0, tf.float32),
+            "top_k" : tf.constant(3, tf.int32),
+            "image_batch" : images,
+            "is_training" : tf.constant(False, tf.bool),
+        }
+        pb_path = "ocr.pb"
+        #output_elements = [ "top_k_predict:0", "top_k_predict:1", "predict_val:0", "predict_index:0", "probabilities:0"]
+        output_elements = [ "top_k_predict:0", "top_k_predict:1"]
+        return infer(pb_path, input_map, output_elements)
 
 
 def main(_):
@@ -519,8 +576,26 @@ def main(_):
         print(top_1)
         with open(FLAGS.inference_result, "w") as ff:
             ff.write(",".join(top_1))
+    elif FLAGS.mode == 'predict':
+        label_dict = get_label_dict(FLAGS.label_file)
+        name_list = get_file_list(FLAGS.inference_data_dir)
+        final_predict_val, final_predict_index = predict(name_list)
+        # save top-1 prediction
+        top_1 =[]
+        # top 3 precdict
+        for i in range(len(final_predict_val)):
+            candidate1 = final_predict_index[i][0]
+            candidate2 = final_predict_index[i][1]
+            candidate3 = final_predict_index[i][2]
+            top_1.append(label_dict[str(candidate1)])
+            log.info('[index {0} ] image: {1} predict: {2} {3} {4}; predict index {5} predict_val {6}'.format(
+                i, name_list[i], label_dict[str(candidate1)],label_dict[str(candidate2)],label_dict[str(candidate3)],
+                final_predict_index[i],final_predict_val[i]))
+        print(top_1)
+        with open(FLAGS.inference_result, "w") as ff:
+            ff.write(",".join(top_1))
     else:
-        print("mode with one of train|test|inference support")
+        print("mode with one of train|test|inference|predict support")
 
 if __name__ == "__main__":
     tf.app.run()
